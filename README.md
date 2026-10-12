@@ -18,9 +18,9 @@
 ## ⚡ Cara Kerja Singkat (serius)
 
 ```
-Jadwal kuliah tiba  →  GitHub Actions aktif  →  Bot login SimKuliah
-                                                       ↓
-HP dapat notif  ←  ntfy.sh  ←  Absen berhasil diklik ✓
+cron-job.org (tiap 15 mnt)  →  GitHub Actions  →  Ada kuliah? → Bot login SimKuliah
+                                                                      ↓
+HP dapat notif  ←  ntfy.sh  ←  Klik absen ✓  ←  Nunggu dosen buka absen (refresh tiap 45 dtk)
      (walopun masih teler)
 ```
 
@@ -112,7 +112,7 @@ Bot tidak bisa baca pikiran. Dia butuh file `jadwal_cache.json` untuk tahu kapan
 Tab Actions → Refresh Jadwal Cache → Run workflow → Run workflow
 ```
 
-Bot akan login, ambil seluruh jadwal semester, simpan otomatis. Ulangi tiap awal semester — atau satu kali seumur semester, lalu lupakan. Persis seperti niat olahraga.
+Bot akan login, ambil seluruh jadwal semester, simpan otomatis. Setelah itu workflow-nya jalan sendiri tiap Senin, jadi cukup sekali di awal semester, lalu lupakan. Persis seperti niat olahraga.
 
 #### Cara B — Edit Manual *(untuk kalian yang entah kenapa memilih jalan susah)*
 
@@ -136,35 +136,43 @@ Buka `jadwal_cache.json`, tambahkan entry sesuai format ini:
 
 ---
 
-### Langkah 5 — Sesuaikan Jadwal Cron
+### Langkah 5 — Pasang Alarm di cron-job.org
 
-Ini bagian yang butuh sedikit usaha otak. Cron berjalan dalam waktu **UTC** — kurangi 7 jam dari WIB. Aku tahu kalian tidak suka matematika, makanya sudah dibuatkan tabelnya.
+Sejak SimKuliah cuma membuka absen mahasiswa **setelah dosen absen** (dan cuma ~15 menit), bot tidak bisa lagi datang sekali lalu klik. Bot harus **nongkrong di halaman absensi selama jam kuliah** sampai tombolnya muncul. Mirip kalian nungguin chat doi, bedanya bot ini dapat balasan.
 
-**Rumus:** `WIB - 7 jam = UTC`
+Masalahnya, cron bawaan GitHub bisa telat **sampai sejam**. Absen 15 menit + delay sejam = alpa. Jadi yang membangunkan bot adalah **cron-job.org** (gratis, tepat waktu), yang memanggil API GitHub tiap 15 menit. Bot sendiri yang mengecek `jadwal_cache.json`: kalau tidak ada kuliah, dia langsung tidur lagi dalam ~20 detik.
 
-| Jam WIB | Jam UTC | Cron |
-|---------|---------|------|
-| 08.00 | 01.00 | `0 1 * * [hari]` |
-| 10.45 | 03.45 | `45 3 * * [hari]` |
-| 14.00 | 07.00 | `0 7 * * [hari]` |
-| 16.35 | 09.35 | `35 9 * * [hari]` |
+Setup ini **sekali seumur hidup** — tidak perlu diubah tiap semester. Cron bawaan GitHub tetap ada sebagai cadangan.
 
-**Kode hari:** `1` = Senin, `2` = Selasa, `3` = Rabu, `4` = Kamis, `5` = Jumat, `6` = Sabtu, `0` = Minggu
+**5a. Bikin token GitHub**
 
-Edit file `.github/workflows/absen.yml`. Sesuaikan dengan jadwal kuliah kalian yang — aku yakin — sudah kalian hafal karena selalu hadir. *Ahem.*
-
-**Contoh — kuliah Kamis jam 08.00 WIB** (jam di mana kalian biasanya baru memejamkan mata):
-
-```yaml
-- cron: '0 1 * * 4'
+```
+GitHub → Settings → Developer settings → Personal access tokens → Fine-grained tokens → Generate new token
 ```
 
-**Contoh — Rabu double sesi:**
+| Field | Isi |
+|-------|-----|
+| Repository access | *Only select repositories* → pilih repo absen kalian |
+| Permissions → Repository → **Actions** | **Read and write** (yang lain biarkan) |
+| Expiration | Maksimal 1 tahun. Catat tanggalnya. Iya, catat. |
 
-```yaml
-- cron: '0 7 * * 3'   # 14.00 WIB
-- cron: '35 9 * * 3'  # 16.35 WIB
-```
+Token ini cuma bisa menjalankan workflow di repo itu. Password tetap aman di Secrets.
+
+**5b. Bikin cronjob di [cron-job.org](https://cron-job.org)**
+
+Daftar → **Create cronjob**, isi:
+
+| Field | Isi |
+|-------|-----|
+| URL | `https://api.github.com/repos/<username>/<repo>/actions/workflows/absen.yml/dispatches` |
+| Execution schedule | Custom: tiap **15 menit**, jam **7–19**, hari **Senin–Sabtu** |
+| Timezone (Settings akun) | `Asia/Jakarta` |
+| Advanced → Request method | `POST` |
+| Advanced → Headers | `Authorization: Bearer <token>`<br>`Accept: application/vnd.github+json`<br>`X-GitHub-Api-Version: 2022-11-28` |
+| Advanced → Request body | `{"ref":"main"}` |
+| Notifications | Centang notif kalau gagal — biar tahu saat token kedaluwarsa |
+
+Klik **Test run**. Kalau responsnya `204`, berhasil — cek tab Actions, harusnya ada run baru. Kalau `401`/`403`, tokennya salah atau izinnya kurang. Kalau `404`, URL-nya typo.
 
 ---
 
@@ -172,40 +180,47 @@ Edit file `.github/workflows/absen.yml`. Sesuaikan dengan jadwal kuliah kalian y
 
 Sebelum menyerahkan tanggung jawab akademik kepada sekumpulan cron job, tes dulu. Ini satu-satunya langkah yang benar-benar membutuhkan perhatian — tolong hadir secara penuh, setidaknya untuk ini.
 
-1. Buka tab **Actions** di repo kalian
-2. Klik **Absensi Otomatis** di sidebar kiri
-3. Klik **Run workflow** → **Run workflow**
-4. Tunggu ~1-2 menit — ya, kalian perlu menunggu. Tidak ada yang instan kecuali mie.
+1. Pastikan jadwal sudah di-refresh (Langkah 4)
+2. Buka tab **Actions** → **Absensi Otomatis** → **Run workflow**
+3. Di luar jam kuliah, run harus selesai cepat dengan log `Tidak ada kuliah dalam jendela pantau sekarang. Skip.` Itu normal.
+4. Tes sebenarnya: saat kuliah berikutnya. Log akan menampilkan `Belum dibuka dosen.` tiap ~45 detik sampai tombol muncul.
 
-**Baca hasilnya:**
+**Notif yang mungkin masuk:**
 
-- 🟢 `Absen berhasil` → semua beres, kalian resmi bisa rebahan dengan hati tenang
-- 🟡 `tidak ada tombol absen` → bot jalan normal, tidak ada jadwal aktif saat ini. Santai
-- 🔴 `Login gagal` → cek NPM dan password di Secrets. Kemungkinan besar ada typo karena diketik sambil ngantuk
+- 🚨 `ABSEN DIBUKA` → dosen baru buka absen. Bot sedang klik. Kalau kalian di kelas, ini juga alarm buat absen sendiri
+- 🟢 `Absen Berhasil` → beres, kalian resmi bisa rebahan dengan hati tenang
+- 🟡 `Absen Tidak Dibuka` → sampai kuliah selesai dosen tidak buka absen
+- 🟡 `Halaman Absen Aneh` → halaman absensi berubah tampilan, cek manual
+- 🔴 `Absen Butuh Tindakan` / `Absen ERROR` → bot tidak bisa absen. **Absen manual dari HP sekarang**
 
 ---
 
 ### Cara Kerja Bot (Lebih Detail)
 
-Setiap kali bot aktif, dia melakukan ini:
+Setiap kali dibangunkan (tiap 15 menit):
 
-1. Cek `jadwal_cache.json` — apakah hari ini ada jadwal kuliah?
-2. Kalau ada → login SimKuliah → klik tombol absen → kirim notif ke HP kalian yang mungkin sedang telungkup di suatu tempat
-3. Kalau tidak ada → kirim notif info → berhenti dengan anggun
+1. Cek `jadwal_cache.json` — ada kuliah yang mulai ≤30 menit lagi atau sedang berjalan?
+2. Tidak ada → berhenti dalam ~20 detik, tanpa buka browser
+3. Sudah absen untuk sesi ini (penanda di cache Actions) → berhenti
+4. Ada → login SimKuliah (CAPTCHA dicoba ulang sampai 10×) → buka halaman absensi tiap 45 detik
+5. Tombol muncul → notif `ABSEN DIBUKA` → klik + konfirmasi → notif `Absen Berhasil`
+6. Kuliah selesai + 20 menit, tombol tidak pernah muncul → notif `Absen Tidak Dibuka`
+
+Hanya satu bot yang jalan dalam satu waktu; trigger yang datang saat bot sedang menunggu akan antri, lalu langsung berhenti karena sesi itu sudah diabsen.
 
 Bot tidak pernah bolos. Bot tidak pernah lupa. Bot tidak perlu diingatkan dua kali.
 
 ---
 
-### Refresh Jadwal Tiap Semester
-
-Awal semester baru = jadwal baru = kalian perlu refresh cache. Caranya:
+### Refresh Jadwal
 
 ```
 Tab Actions → Refresh Jadwal Cache → Run workflow
 ```
 
-Atau biarkan workflow otomatis yang jalan tiap Februari dan Agustus. Satu hal dalam hidup kalian yang benar-benar berjalan sendiri tanpa perlu kalian urus — manfaatkan sebaik mungkin.
+Workflow ini juga jalan otomatis **tiap Senin pagi**, supaya kuliah pengganti dan perubahan ruang/jam ikut terbaca. Commit hanya dibuat kalau jadwal benar-benar berubah. Satu hal dalam hidup kalian yang benar-benar berjalan sendiri — manfaatkan sebaik mungkin.
+
+Kalau cache basi (semua jadwal sudah lewat), log absen akan menampilkan warning kuning.
 
 ---
 
@@ -216,10 +231,11 @@ Karena pasti ada yang tidak berjalan mulus, dan kemungkinan besar itu bukan sala
 | Masalah | Kemungkinan penyebab | Solusi |
 |---------|---------------------|--------|
 | Login gagal terus | NPM atau password salah di Secrets | Cek lagi. Pelan-pelan. Jangan buru-buru. |
-| Tidak ada tombol absen padahal ada jadwal | Dosen belum buka sesi absen | Tunggu. Dosen juga manusia. Beda dengan kalian yang bahkan hadir saja perlu diwakilkan. |
+| `Absen Tidak Dibuka` padahal dosen buka | Dosen buka absen di luar jendela pantau (30 menit sebelum s/d 20 menit setelah kuliah) | Absen manual. Lalu laporkan, mungkin jendelanya perlu dilebarkan. |
+| Bot tidak jalan sama sekali | Token cron-job.org kedaluwarsa / salah | Lihat riwayat eksekusi di cron-job.org. `401` = bikin token baru. |
 | Notif tidak masuk | Nama NTFY_TOPIC tidak cocok | Pastikan nama topik di app **sama persis** dengan yang di Secrets. Huruf kapital beda = topik beda. |
-| Bot tidak jalan sesuai jadwal | Cron salah timezone | Sudah ada tabelnya di Langkah 5. Baca lagi. |
-| `jadwal_cache.json` kosong | Lupa refresh | Jalankan workflow Refresh Jadwal Cache. Tidak ada shortcut. |
+| Selalu `Tidak ada kuliah` | `jadwal_cache.json` basi | Jalankan workflow Refresh Jadwal Cache. Tidak ada shortcut. |
+| Refresh gagal di step commit | Izin workflow | Settings → Actions → General → Workflow permissions → **Read and write** |
 
 ---
 
@@ -229,11 +245,12 @@ Untuk yang penasaran isi repo ini ngapain aja — apresiasi rasa ingin tahu kali
 
 | File | Fungsi |
 |------|--------|
-| `absen_runner.py` | Script utama — tulang punggung seluruh operasi ini |
+| `absen_runner.py` | Script utama — cek jadwal, lalu nongkrong di halaman absensi sampai tombolnya muncul |
 | `refresh_jadwal.py` | Scrape jadwal semester dari SimKuliah |
+| `simkuliah.py` | Login (+ retry CAPTCHA), browser, dan notif — dipakai kedua script di atas |
 | `jadwal_cache.json` | Database jadwal. Satu-satunya entitas di sini yang tahu jadwal kuliah kalian lebih baik dari kalian |
-| `.github/workflows/absen.yml` | Jadwal cron — yang kerja keras sementara kalian tidak |
-| `.github/workflows/refresh.yml` | Workflow refresh jadwal tiap awal semester |
+| `.github/workflows/absen.yml` | Workflow absen — dibangunkan cron-job.org |
+| `.github/workflows/refresh.yml` | Workflow refresh jadwal tiap Senin |
 
 ---
 
@@ -247,7 +264,7 @@ git clone https://github.com/NapoleonPro/absenv0.1.git
 cd absenv0.1
 
 # Install dependencies
-pip install selenium python-dotenv
+pip install selenium ddddocr python-dotenv
 
 # Buat file .env
 echo "NPM=npm_kalian" > .env

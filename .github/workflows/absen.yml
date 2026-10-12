@@ -1,49 +1,71 @@
 name: Absensi Otomatis
 
 on:
-  schedule:
-    # Selasa 10.45 WIB (Pengolahan Citra Digital)
-    - cron: '45 3 * * 2'
-
-    # Rabu 14.00 WIB (Technopreneurship, Proyek Technopreneurship)
-    - cron: '0 7 * * 3'
-
-    # Rabu 16.35 WIB (Metodologi Penelitian)
-    - cron: '35 9 * * 3'
-
-    # Kamis 08.00 WIB (Pattern Recognition, Visi Komputer)
-    - cron: '0 1 * * 4'
-
-    # Kamis 14.00 WIB (Visi Komputer, Internet of Things, Praktikum IoT)
-    - cron: '0 7 * * 4'
-
-    # Sabtu 14.00 WIB (Internet of Things, Praktikum IoT)
-    - cron: '0 7 * * 6'
-
+  # Pemicu utama: cron-job.org memanggil API dispatch tiap 15 menit (lihat README).
+  # Cron GitHub bisa telat sampai sejam, jadi tidak diandalkan.
   workflow_dispatch:
+
+  # Cadangan kalau cron-job.org mati: tiap 30 menit, 07.00-19.30 WIB, Senin-Sabtu.
+  # Script sendiri yang memutuskan dari jadwal_cache.json apakah ada kuliah.
+  schedule:
+    - cron: '*/30 0-12 * * 1-6'
+
+# Satu job polling dalam satu waktu; trigger berikutnya menunggu, tidak membatalkan.
+concurrency:
+  group: absen
+  cancel-in-progress: false
 
 jobs:
   absen:
     runs-on: ubuntu-latest
+    timeout-minutes: 240
 
     steps:
       - name: 1. Checkout repo
         uses: actions/checkout@v4
 
-      - name: 2. Setup Chrome
-        uses: browser-actions/setup-chrome@latest
-
-      - name: 3. Setup Python
+      - name: 2. Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
-      - name: 4. Install dependencies
-        run: pip install selenium ddddocr python-dotenv
+      - name: 3. Cek jadwal
+        id: cek
+        run: python -u absen_runner.py --cek
 
-      - name: 5. Jalankan absen_runner.py
+      - name: 4. Cek penanda sudah absen
+        id: penanda
+        if: steps.cek.outputs.ada == 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: .sudah_absen
+          key: ${{ steps.cek.outputs.kunci }}
+          lookup-only: true
+
+      - name: 5. Setup Chrome
+        if: steps.cek.outputs.ada == 'true' && steps.penanda.outputs.cache-hit != 'true'
+        uses: browser-actions/setup-chrome@latest
+
+      - name: 6. Install dependencies
+        if: steps.cek.outputs.ada == 'true' && steps.penanda.outputs.cache-hit != 'true'
+        run: pip install selenium ddddocr
+
+      - name: 7. Jalankan absen_runner.py
+        id: absen
+        if: steps.cek.outputs.ada == 'true' && steps.penanda.outputs.cache-hit != 'true'
         env:
           NPM: ${{ secrets.NPM }}
           PASSWORD: ${{ secrets.PASSWORD }}
           NTFY_TOPIC: ${{ secrets.NTFY_TOPIC }}
         run: python -u absen_runner.py
+
+      - name: 8. Simpan penanda sudah absen
+        if: steps.absen.outputs.berhasil == 'true'
+        run: mkdir -p .sudah_absen && date > .sudah_absen/waktu
+
+      - name: 9. Upload penanda
+        if: steps.absen.outputs.berhasil == 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: .sudah_absen
+          key: ${{ steps.cek.outputs.kunci }}

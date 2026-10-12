@@ -1,12 +1,37 @@
+"""
+Absen otomatis SimKuliah.
+
+  python absen_runner.py --cek   Cek apakah sekarang ada kuliah (tanpa Chrome).
+  python absen_runner.py         Login lalu polling /absensi sampai tombol absen
+                                 muncul atau jendela kuliah habis.
+
+Mahasiswa hanya bisa absen setelah dosen membuka absen (jendela ~15 menit),
+jadi bot memantau halaman absensi selama jam kuliah, bukan klik sekali.
+"""
+
 import json
 import os
 import sys
-from datetime import datetime, date
+import time
+from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 from pathlib import Path
 
 WIB = ZoneInfo("Asia/Jakarta")
 CACHE_FILE = Path("jadwal_cache.json")
+
+MULAI_PANTAU_SEBELUM = timedelta(minutes=30)
+SELESAI_PANTAU_SETELAH = timedelta(minutes=20)
+INTERVAL_POLLING = 45  # detik
+TEKS_BELUM_BUKA = "Belum masuk waktu absen"
+
+
+def sekarang() -> datetime:
+    # SEKARANG=2026-10-13T16:10 untuk testing
+    override = os.getenv("SEKARANG")
+    if override:
+        return datetime.fromisoformat(override).replace(tzinfo=WIB)
+    return datetime.now(WIB)
 
 
 def load_cache() -> list[dict] | None:
@@ -26,30 +51,76 @@ def load_cache() -> list[dict] | None:
     return jadwal
 
 
-def get_jadwal_hari_ini(jadwal: list[dict]) -> list[dict]:
-    """Filter jadwal berdasarkan tanggal hari ini."""
-    hari_ini = datetime.now(WIB).date()
-    return [mk for mk in jadwal if mk.get("tanggal") == hari_ini]
+def jendela_kuliah(mk: dict) -> tuple[datetime, datetime] | None:
+    """Return (mulai, selesai) kuliah dari tanggal + jam "16.30 - 19.00"."""
+    if not mk.get("tanggal") or "-" not in mk.get("jam", ""):
+        return None
+    try:
+        jam_mulai, jam_selesai = [j.strip() for j in mk["jam"].split("-")]
+        mulai = datetime.strptime(jam_mulai, "%H.%M").time()
+        selesai = datetime.strptime(jam_selesai, "%H.%M").time()
+    except ValueError:
+        return None
+    return (
+        datetime.combine(mk["tanggal"], mulai, tzinfo=WIB),
+        datetime.combine(mk["tanggal"], selesai, tzinfo=WIB),
+    )
 
 
-def kirim_notif_bisa(judul: str, pesan: str, topic: str):
-    if not topic:
+def sesi_aktif(jadwal: list[dict], now: datetime) -> list[dict]:
+    """Kuliah yang jendela pantaunya (mulai-30m s/d selesai+20m) mencakup sekarang."""
+    hasil = []
+    for mk in jadwal:
+        jendela = jendela_kuliah(mk)
+        if not jendela:
+            continue
+        mulai, selesai = jendela
+        if mulai - MULAI_PANTAU_SEBELUM <= now <= selesai + SELESAI_PANTAU_SETELAH:
+            hasil.append({**mk, "mulai": mulai, "selesai": selesai})
+    return sorted(hasil, key=lambda mk: mk["mulai"])
+
+
+def tulis_output(**kwargs):
+    """Tulis output step GitHub Actions (kalau jalan di Actions)."""
+    path = os.getenv("GITHUB_OUTPUT")
+    if not path:
         return
-    os.system(f'curl -s -H "Title: {judul}" -d "{pesan}" ntfy.sh/{topic}-bisa')
+    with open(path, "a") as f:
+        for k, v in kwargs.items():
+            f.write(f"{k}={v}\n")
 
-def kirim_notif_info(judul: str, pesan: str, topic: str):
-    if not topic:
-        return
-    os.system(f'curl -s -H "Title: {judul}" -d "{pesan}" ntfy.sh/{topic}-info')
 
-def kirim_notif_gagal(judul: str, pesan: str, topic: str):
-    if not topic:
-        return
-    os.system(f'curl -s -H "Title: {judul}" -d "{pesan}" ntfy.sh/{topic}-gagal')
+def cek() -> list[dict]:
+    """Mode --cek: tentukan apakah perlu polling, tanpa buka browser."""
+    now = sekarang()
+    print(f" Waktu sekarang: {now.strftime('%A, %d-%m-%Y %H:%M')} WIB")
+
+    jadwal = load_cache()
+    if not jadwal:
+        tulis_output(ada="false")
+        return []
+
+    tanggal_terakhir = max((mk["tanggal"] for mk in jadwal if mk.get("tanggal")), default=None)
+    if tanggal_terakhir and tanggal_terakhir < now.date():
+        print(f"::warning::jadwal_cache.json basi (jadwal terakhir {tanggal_terakhir}). Jalankan workflow Refresh Jadwal Cache.")
+
+    aktif = sesi_aktif(jadwal, now)
+    if not aktif:
+        print(" Tidak ada kuliah dalam jendela pantau sekarang. Skip.")
+        tulis_output(ada="false")
+        return []
+
+    print(f" Kuliah dalam jendela pantau ({len(aktif)} sesi):")
+    for mk in aktif:
+        print(f"   - {mk['nama_mk']} | {mk['jam']} | {mk['ruang']}")
+
+    # Kunci penanda "sudah absen" untuk sesi ini, dipakai actions/cache
+    kunci = f"absen-{aktif[0]['mulai'].strftime('%Y%m%d-%H%M')}"
+    tulis_output(ada="true", kunci=kunci)
+    return aktif
+
 
 def main():
-    print(f" Waktu sekarang: {datetime.now(WIB).strftime('%A, %d-%m-%Y %H:%M')} WIB")
-
     npm = os.getenv("NPM")
     password = os.getenv("PASSWORD")
     ntfy_topic = os.getenv("NTFY_TOPIC", "")
@@ -58,76 +129,95 @@ def main():
         print(" NPM atau PASSWORD tidak ditemukan di environment.")
         sys.exit(1)
 
-    jadwal = load_cache()
-    if not jadwal:
-        kirim_notif_gagal("Absen ERROR", "jadwal_cache.json tidak ditemukan.", ntfy_topic)
-        sys.exit(1)
-
-    jadwal_hari_ini = get_jadwal_hari_ini(jadwal)
-    if not jadwal_hari_ini:
-        print("  Tidak ada jadwal kuliah hari ini. Skip.")
-        kirim_notif_info("Tidak Ada Jadwal", "Bot berjalan, tidak ada MK hari ini.", ntfy_topic)
+    aktif = cek()
+    if not aktif:
         sys.exit(0)
 
-    print(f" Jadwal hari ini ({len(jadwal_hari_ini)} sesi):")
-    for mk in jadwal_hari_ini:
-        print(f"   - {mk['nama_mk']} | {mk['jam']} | {mk['ruang']}")
+    batas = max(mk["selesai"] for mk in aktif) + SELESAI_PANTAU_SETELAH
+    nama_mk = ", ".join(sorted({mk["nama_mk"] for mk in aktif}))
+    print(f" Memantau absensi sampai {batas.strftime('%H:%M')} WIB")
 
-    from selenium import webdriver
-    from selenium.webdriver.chrome.options import Options
+    from selenium.common.exceptions import NoAlertPresentException, UnexpectedAlertPresentException
     from selenium.webdriver.common.by import By
     from selenium.webdriver.support.ui import WebDriverWait
     from selenium.webdriver.support import expected_conditions as EC
     import ddddocr
-    import time
 
-    options = Options()
-    options.add_argument("--headless")
-    options.add_argument("--no-sandbox")
-    options.add_argument("--disable-dev-shm-usage")
-    options.add_argument("--disable-gpu")
-    options.add_argument("--window-size=1920,1080")
-    options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
+    from simkuliah import BASE_URL, buat_driver, di_halaman_login, kirim_notif, login
 
-    driver = webdriver.Chrome(options=options)
+    def ambil_alert() -> str | None:
+        """Tutup alert browser kalau ada (mis. 'Harap berikan izin lokasi...')."""
+        try:
+            alert = driver.switch_to.alert
+            teks = alert.text
+            alert.accept()
+            return teks
+        except NoAlertPresentException:
+            return None
+
+    def cari_tombol_absen():
+        # #do_absen_manual = tombol "Simpan" tersembunyi milik modal dosen/asisten, bukan tombol absen
+        for btn in driver.find_elements(By.CSS_SELECTOR, ".btn.btn-success:not(#do_absen_manual)"):
+            if btn.is_displayed():
+                return btn
+        return None
+
+    driver = buat_driver()
     ocr = ddddocr.DdddOcr(show_ad=False)
 
-    BASE_URL = "https://simkuliah.usk.ac.id"
+    absen_berhasil = 0
+    sudah_alarm = False
+    sudah_lapor_aneh = False
 
     try:
-        print("\n Memulai login...")
-        driver.get(BASE_URL)
-        wait = WebDriverWait(driver, 10)
-
-        wait.until(EC.presence_of_element_located((By.NAME, "username"))).send_keys(npm)
-        driver.find_element(By.NAME, "password").send_keys(password)
-
-        captcha_img = wait.until(EC.presence_of_element_located((By.ID, "captcha-img")))
-        captcha_text = ocr.classification(captcha_img.screenshot_as_png).strip().replace(" ", "")
-        print(f" CAPTCHA terbaca: {captcha_text}")
-
-        driver.find_element(By.NAME, "captcha_answer").send_keys(captcha_text)
-        wait.until(EC.element_to_be_clickable((By.CSS_SELECTOR, 'button[type="submit"]'))).click()
-        time.sleep(3)
-
-        if "login" in driver.current_url.lower():
-            print(" Login gagal! CAPTCHA mungkin salah terbaca.")
-            kirim_notif_gagal("Absen ERROR", "Login gagal, CAPTCHA salah terbaca.", ntfy_topic)
+        if not login(driver, ocr, npm, password):
+            kirim_notif(ntfy_topic, "gagal", "Absen ERROR",
+                        f"Login gagal (CAPTCHA) untuk {nama_mk}. Absen manual!", "high")
             sys.exit(1)
 
-        print(" Login berhasil!")
-
-        driver.get(f"{BASE_URL}/index.php/absensi")
-        time.sleep(2)
-
-        absen_berhasil = 0
-        for i in range(2):
+        while sekarang() < batas:
             try:
-                absen_btn = WebDriverWait(driver, 5).until(
-                    EC.element_to_be_clickable((By.CSS_SELECTOR, ".btn.btn-success"))
-                )
-                driver.execute_script("arguments[0].click();", absen_btn)
+                driver.get(f"{BASE_URL}/index.php/absensi")
                 time.sleep(2)
+
+                if di_halaman_login(driver):
+                    print(" Sesi habis, login ulang...")
+                    if not login(driver, ocr, npm, password):
+                        kirim_notif(ntfy_topic, "gagal", "Absen ERROR",
+                                    f"Login ulang gagal untuk {nama_mk}. Absen manual!", "high")
+                        sys.exit(1)
+                    continue
+
+                tombol = cari_tombol_absen()
+
+                if not tombol:
+                    if absen_berhasil:
+                        break
+                    if TEKS_BELUM_BUKA in driver.page_source:
+                        print(f" [{sekarang().strftime('%H:%M:%S')}] Belum dibuka dosen.")
+                    elif not sudah_lapor_aneh:
+                        print(" Halaman absensi tidak dikenali (tidak ada tombol maupun pesan 'belum masuk waktu').")
+                        kirim_notif(ntfy_topic, "info", "Halaman Absen Aneh",
+                                    "Tidak ada tombol absen maupun pesan 'Belum masuk waktu absen'. Cek manual.")
+                        sudah_lapor_aneh = True
+                    time.sleep(INTERVAL_POLLING)
+                    continue
+
+                if not sudah_alarm:
+                    print(" Absen DIBUKA!")
+                    kirim_notif(ntfy_topic, "info", "ABSEN DIBUKA",
+                                f"{nama_mk}: absen dibuka, waktu ~15 menit.", "high", "rotating_light")
+                    sudah_alarm = True
+
+                driver.execute_script("arguments[0].click();", tombol)
+                time.sleep(2)
+
+                teks_alert = ambil_alert()
+                if teks_alert:
+                    print(f" Alert setelah klik: {teks_alert}")
+                    kirim_notif(ntfy_topic, "gagal", "Absen Butuh Tindakan",
+                                f"Bot tidak bisa absen: {teks_alert} Absen manual dari HP!", "high")
+                    sys.exit(1)
 
                 konfirmasi = WebDriverWait(driver, 10).until(
                     EC.element_to_be_clickable((By.CLASS_NAME, "confirm"))
@@ -135,23 +225,39 @@ def main():
                 driver.execute_script("arguments[0].click();", konfirmasi)
                 time.sleep(3)
 
+                teks_alert = ambil_alert()
+                if teks_alert:
+                    print(f" Alert setelah konfirmasi: {teks_alert}")
+                    kirim_notif(ntfy_topic, "gagal", "Absen Butuh Tindakan",
+                                f"Bot tidak bisa absen: {teks_alert} Absen manual dari HP!", "high")
+                    sys.exit(1)
+
                 absen_berhasil += 1
                 print(f" Absen {absen_berhasil} berhasil!")
+                # Langsung muat ulang untuk cek tombol absen berikutnya (mis. teori + praktikum)
 
-            except Exception:
-                break
+            except UnexpectedAlertPresentException as e:
+                teks = e.alert_text or ambil_alert() or "alert tidak dikenal"
+                print(f" Alert: {teks}")
+                kirim_notif(ntfy_topic, "gagal", "Absen Butuh Tindakan",
+                            f"Bot tidak bisa absen: {teks} Absen manual dari HP!", "high")
+                sys.exit(1)
 
-        if absen_berhasil == 0:
-            print("  Tidak ada tombol absen yang tersedia.")
-            kirim_notif_info("Tidak Ada Tombol Absen", "Bot login berhasil tapi tidak ada tombol absen.", ntfy_topic)
-        else:
-            pesan = f"{absen_berhasil} absensi berhasil dilakukan."
+        if absen_berhasil:
+            pesan = f"{absen_berhasil} absensi berhasil ({nama_mk})."
             print(f"\n {pesan}")
-            kirim_notif_bisa("Absen Berhasil", pesan, ntfy_topic)
+            kirim_notif(ntfy_topic, "bisa", "Absen Berhasil", pesan)
+            tulis_output(berhasil="true")
+        else:
+            print(" Jendela kuliah habis, absen tidak pernah dibuka.")
+            kirim_notif(ntfy_topic, "info", "Absen Tidak Dibuka",
+                        f"{nama_mk}: sampai {batas.strftime('%H:%M')} dosen tidak membuka absen.")
 
+    except SystemExit:
+        raise
     except Exception as e:
-        print(f" Error: {e}")
-        kirim_notif_gagal("Absen ERROR", f"Error: {e}", ntfy_topic)
+        print(f" Error: {type(e).__name__}: {e}")
+        kirim_notif(ntfy_topic, "gagal", "Absen ERROR", f"{nama_mk}: {type(e).__name__}: {str(e)[:200]}", "high")
         sys.exit(1)
 
     finally:
@@ -159,4 +265,7 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    if "--cek" in sys.argv:
+        cek()
+    else:
+        main()

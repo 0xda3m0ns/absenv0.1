@@ -4,10 +4,14 @@ on:
   # Jalankan manual dari tab Actions
   workflow_dispatch:
 
-  # Otomatis setiap awal semester (Februari dan Agustus, tiap Senin pertama)
+  # Otomatis tiap Senin 06.00 WIB, supaya kuliah pengganti & perubahan jadwal ikut terbaca.
+  # Commit hanya terjadi kalau isi jadwal berubah.
   schedule:
-    - cron: '0 0 1-7 2 1'   # Senin pertama Februari, 07.00 WIB
-    - cron: '0 0 1-7 8 1'   # Senin pertama Agustus, 07.00 WIB
+    - cron: '0 23 * * 0'
+
+# Dibutuhkan untuk push jadwal_cache.json
+permissions:
+  contents: write
 
 jobs:
   refresh:
