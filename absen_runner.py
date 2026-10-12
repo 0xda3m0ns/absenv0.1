@@ -19,6 +19,7 @@ from pathlib import Path
 
 WIB = ZoneInfo("Asia/Jakarta")
 CACHE_FILE = Path("jadwal_cache.json")
+PENANDA_DIR = Path(".sudah_absen")
 
 MULAI_PANTAU_SEBELUM = timedelta(minutes=30)
 SELESAI_PANTAU_SETELAH = timedelta(minutes=20)
@@ -80,47 +81,45 @@ def sesi_aktif(jadwal: list[dict], now: datetime) -> list[dict]:
     return sorted(hasil, key=lambda mk: mk["mulai"])
 
 
-def tulis_output(**kwargs):
-    """Tulis output step GitHub Actions (kalau jalan di Actions)."""
-    path = os.getenv("GITHUB_OUTPUT")
-    if not path:
-        return
-    with open(path, "a") as f:
-        for k, v in kwargs.items():
-            f.write(f"{k}={v}\n")
-
-
 def cek() -> list[dict]:
-    """Mode --cek: tentukan apakah perlu polling, tanpa buka browser."""
+    """Tentukan sesi yang perlu dipantau sekarang, tanpa buka browser."""
     now = sekarang()
     print(f" Waktu sekarang: {now.strftime('%A, %d-%m-%Y %H:%M')} WIB")
 
     jadwal = load_cache()
     if not jadwal:
-        tulis_output(ada="false")
         return []
 
     tanggal_terakhir = max((mk["tanggal"] for mk in jadwal if mk.get("tanggal")), default=None)
     if tanggal_terakhir and tanggal_terakhir < now.date():
-        print(f"::warning::jadwal_cache.json basi (jadwal terakhir {tanggal_terakhir}). Jalankan workflow Refresh Jadwal Cache.")
+        print(f" PERINGATAN: jadwal_cache.json basi (jadwal terakhir {tanggal_terakhir}). Jalankan refresh_jadwal.py.")
 
     aktif = sesi_aktif(jadwal, now)
     if not aktif:
         print(" Tidak ada kuliah dalam jendela pantau sekarang. Skip.")
-        tulis_output(ada="false")
         return []
 
     print(f" Kuliah dalam jendela pantau ({len(aktif)} sesi):")
     for mk in aktif:
         print(f"   - {mk['nama_mk']} | {mk['jam']} | {mk['ruang']}")
 
-    # Kunci penanda "sudah absen" untuk sesi ini, dipakai actions/cache
-    kunci = f"absen-{aktif[0]['mulai'].strftime('%Y%m%d-%H%M')}"
-    tulis_output(ada="true", kunci=kunci)
+    kunci = kunci_sesi(aktif)
+    if (PENANDA_DIR / kunci).exists():
+        print(" Sesi ini sudah diabsen. Skip.")
+        return []
+
     return aktif
 
 
+def kunci_sesi(aktif: list[dict]) -> str:
+    """Nama penanda "sudah absen" untuk sesi ini, mis. absen-20261013-1630."""
+    return f"absen-{aktif[0]['mulai'].strftime('%Y%m%d-%H%M')}"
+
+
 def main():
+    from dotenv import load_dotenv
+    load_dotenv()
+
     npm = os.getenv("NPM")
     password = os.getenv("PASSWORD")
     ntfy_topic = os.getenv("NTFY_TOPIC", "")
@@ -247,7 +246,8 @@ def main():
             pesan = f"{absen_berhasil} absensi berhasil ({nama_mk})."
             print(f"\n {pesan}")
             kirim_notif(ntfy_topic, "bisa", "Absen Berhasil", pesan)
-            tulis_output(berhasil="true")
+            PENANDA_DIR.mkdir(exist_ok=True)
+            (PENANDA_DIR / kunci_sesi(aktif)).write_text(sekarang().isoformat())
         else:
             print(" Jendela kuliah habis, absen tidak pernah dibuka.")
             kirim_notif(ntfy_topic, "info", "Absen Tidak Dibuka",

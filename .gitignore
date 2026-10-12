@@ -6,3 +6,8 @@ __pycache__/
 *.pyc
 
 *.png
+.venv/
+logs/
+.sudah_absen/
+jadwal_cache.json
+debug/
