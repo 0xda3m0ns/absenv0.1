@@ -23,7 +23,11 @@ def buat_driver() -> webdriver.Chrome:
         "user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
     )
-    return webdriver.Chrome(options=options)
+    # Jangan tunggu semua resource (gambar/CDN) selesai dimuat; cukup DOM siap
+    options.page_load_strategy = "eager"
+    driver = webdriver.Chrome(options=options)
+    driver.set_page_load_timeout(60)
+    return driver
 
 
 def di_halaman_login(driver: webdriver.Chrome) -> bool:
