@@ -1,23 +1,3 @@
-"""
-Absen SimKuliah untuk node "Execute Command" n8n.
-
-    python3 absen_n8n.py [--maks-menit 180] [--interval 45] [--debug]
-
-Dipicu n8n sekitar jam mulai kuliah. Mahasiswa baru bisa absen setelah dosen
-membuka absen (~15 menit), jadi script login lalu memuat ulang /absensi sampai
-tombol absen muncul atau --maks-menit habis.
-
-Kredensial dari environment (atau file .env di folder yang sama):
-    NPM, PASSWORD, NTFY_TOPIC (opsional, untuk alarm "ABSEN DIBUKA" saat itu juga)
-
-Output: log ke stderr, SATU baris JSON ke stdout untuk node berikutnya:
-    {"status": "bisa"|"info"|"gagal", "judul": "...", "pesan": "..."}
-Exit code selalu 0 supaya alur n8n tetap lanjut ke node notifikasi.
-
---debug: simpan HTML halaman absensi ke folder debug/ saat tombol muncul,
-sesudah konfirmasi, dan saat error/halaman tidak dikenali.
-"""
-
 import argparse
 import json
 import os
