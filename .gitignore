@@ -1,5 +1,3 @@
-mymyenv/
-
 .env
 
 __pycache__/
@@ -7,7 +5,4 @@ __pycache__/
 
 *.png
 .venv/
-logs/
-.sudah_absen/
-jadwal_cache.json
 debug/

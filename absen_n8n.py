@@ -247,15 +247,17 @@ def main():
                     selesai("gagal", "Absen Butuh Tindakan", f"Bot tidak bisa absen: {teks} Absen manual dari HP!")
 
                 absen_berhasil += 1
-                log(f"Absen {absen_berhasil} berhasil.")
-                # Langsung muat ulang untuk cek tombol absen berikutnya (mis. teori + praktikum)
+                log("Absen berhasil.")
+                # Tombol absen tetap muncul setelah absen sukses, jadi jangan
+                # klik ulang. Satu sesi = satu absen.
+                break
 
             except UnexpectedAlertPresentException as e:
                 teks = e.alert_text or ambil_alert() or "alert tidak dikenal"
                 selesai("gagal", "Absen Butuh Tindakan", f"Bot tidak bisa absen: {teks} Absen manual dari HP!")
 
         if absen_berhasil:
-            selesai("bisa", "Absen Berhasil", f"{absen_berhasil} absensi berhasil.")
+            selesai("bisa", "Absen Berhasil", "Absensi berhasil.")
         selesai("info", "Absen Tidak Dibuka",
                 f"Sampai {batas.strftime('%H:%M')} dosen tidak membuka absen.")
 
