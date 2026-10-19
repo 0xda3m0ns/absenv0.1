@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "n8n": {
+      "url": "https://n8n.samvivan.my.id/mcp-server/http",
+      "type": "http"
+    }
+  }
+}
